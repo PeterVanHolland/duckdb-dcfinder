@@ -170,3 +170,59 @@ query I
 SELECT count(*) > 0 FROM dc_error_cells('dup_ids', 'NOT(t1.id = t2.id)');
 ----
 true
+
+# ============================================================
+# dc_repairs() — Repair Suggestions
+# ============================================================
+
+# Repairs should suggest fixing the salary anomalies
+query I
+SELECT count(*) > 0 FROM dc_repairs('dept_salaries', 'NOT(t1.dept = t2.dept AND t1.hired < t2.hired AND t1.salary < t2.salary)');
+----
+true
+
+# Repair suggestions should have suggested values
+query I
+SELECT count(*) > 0 FROM dc_repairs('dept_salaries', 'NOT(t1.dept = t2.dept AND t1.hired < t2.hired AND t1.salary < t2.salary)') WHERE suggested_value IS NOT NULL;
+----
+true
+
+# Clean data should have no repairs
+query I
+SELECT count(*) FROM dc_repairs('unique_test', 'NOT(t1.a = t2.a)');
+----
+0
+
+# ============================================================
+# dc_profile() — Data Profiling
+# ============================================================
+
+# Profile should classify constraints
+query I
+SELECT count(*) > 0 FROM dc_profile('unique_test');
+----
+true
+
+# unique_test should have UCCs
+query I
+SELECT count(*) > 0 FROM dc_profile('unique_test') WHERE constraint_type = 'UCC';
+----
+true
+
+# FD table should have FDs
+query I
+SELECT count(*) > 0 FROM dc_profile('tax_rules', soundness := false) WHERE constraint_type = 'FD';
+----
+true
+
+# Profile descriptions should be human-readable
+query I
+SELECT count(*) > 0 FROM dc_profile('unique_test') WHERE description LIKE '%unique%';
+----
+true
+
+# Profile with soundness filter
+query I
+SELECT count(*) > 0 FROM dc_profile('unique_test', soundness := true);
+----
+true
