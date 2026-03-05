@@ -50,3 +50,42 @@ query I
 SELECT count(*) > 0 FROM dcfinder('unique_test') WHERE dc LIKE '%t1.b = t2.b%';
 ----
 true
+
+# Test soundness column exists
+query I
+SELECT count(*) > 0 FROM dcfinder('employees') WHERE is_sound IS NOT NULL;
+----
+true
+
+# Test soundness=false returns all DCs (including unsound)
+query I
+SELECT (SELECT count(*) FROM dcfinder('employees', soundness := false)) >= (SELECT count(*) FROM dcfinder('employees'));
+----
+true
+
+# UCC constraints (single predicate) are always sound
+query I
+SELECT bool_and(is_sound) FROM dcfinder('unique_test') WHERE num_predicates = 1;
+----
+true
+
+# Test with data that has genuinely dependent columns (FD: state -> tax_rate)
+# Need enough rows for statistical soundness test to have power
+statement ok
+CREATE TABLE tax_rules AS
+SELECT * FROM (VALUES
+    ('CA', 7.25), ('CA', 7.25), ('CA', 7.25), ('CA', 7.25), ('CA', 7.25),
+    ('CA', 7.25), ('CA', 7.25), ('CA', 7.25), ('CA', 7.25), ('CA', 7.25),
+    ('NY', 8.00), ('NY', 8.00), ('NY', 8.00), ('NY', 8.00), ('NY', 8.00),
+    ('NY', 8.00), ('NY', 8.00), ('NY', 8.00), ('NY', 8.00), ('NY', 8.00),
+    ('TX', 0.00), ('TX', 0.00), ('TX', 0.00), ('TX', 0.00), ('TX', 0.00),
+    ('TX', 0.00), ('TX', 0.00), ('TX', 0.00), ('TX', 0.00), ('TX', 0.00),
+    ('FL', 6.00), ('FL', 6.00), ('FL', 6.00), ('FL', 6.00), ('FL', 6.00),
+    ('FL', 6.00), ('FL', 6.00), ('FL', 6.00), ('FL', 6.00), ('FL', 6.00)
+) t(state, tax_rate);
+
+# Should discover the FD state -> tax_rate as a sound DC
+query I
+SELECT count(*) > 0 FROM dcfinder('tax_rules') WHERE is_sound AND dc LIKE '%state%' AND dc LIKE '%tax_rate%';
+----
+true

@@ -15,16 +15,19 @@
 #include "dcfinder/pli.hpp"
 #include "dcfinder/evidence.hpp"
 #include "dcfinder/cover_search.hpp"
+#include "dcfinder/soundness.hpp"
 
 namespace duckdb {
 
 struct DCFinderBindData : public TableFunctionData {
 	string table_name;
 	double threshold;
+	bool soundness;
 };
 
 struct DCFinderGlobalState : public GlobalTableFunctionState {
 	vector<dcfinder::DenialConstraint> results;
+	vector<bool> is_sound;
 	dcfinder::PredicateSpace pred_space;
 	idx_t current_idx;
 	bool done;
@@ -39,10 +42,13 @@ static unique_ptr<FunctionData> DCFinderBind(ClientContext &context, TableFuncti
 
 	result->table_name = input.inputs[0].GetValue<string>();
 	result->threshold = 0.0;
+	result->soundness = true;
 
 	for (auto &kv : input.named_parameters) {
 		if (kv.first == "threshold") {
 			result->threshold = kv.second.GetValue<double>();
+		} else if (kv.first == "soundness") {
+			result->soundness = kv.second.GetValue<bool>();
 		}
 	}
 
@@ -63,6 +69,9 @@ static unique_ptr<FunctionData> DCFinderBind(ClientContext &context, TableFuncti
 
 	names.push_back("succinctness");
 	return_types.push_back(LogicalType::DOUBLE);
+
+	names.push_back("is_sound");
+	return_types.push_back(LogicalType::BOOLEAN);
 
 	return std::move(result);
 }
@@ -95,8 +104,9 @@ static unique_ptr<GlobalTableFunctionState> DCFinderInit(ClientContext &context,
 
 	while (true) {
 		auto chunk = query_result->Fetch();
-		if (!chunk || chunk->size() == 0)
+		if (!chunk || chunk->size() == 0) {
 			break;
+		}
 		for (idx_t col = 0; col < num_columns; col++) {
 			for (idx_t row = 0; row < chunk->size(); row++) {
 				column_data[col].push_back(chunk->GetValue(col, row));
@@ -122,8 +132,28 @@ static unique_ptr<GlobalTableFunctionState> DCFinderInit(ClientContext &context,
 	evidence_set.Build(result->pred_space, pli_set, column_data, num_tuples);
 
 	// Phase 4: Find minimal DCs
-	result->results =
+	auto all_dcs =
 	    dcfinder::CoverSearch::FindMinimalDCs(evidence_set, result->pred_space, bind_data.threshold, num_tuples);
+
+	// Phase 5: Soundness check (Martin et al., PVLDB 2025)
+	// Filters out DCs whose predicates are statistically independent
+	if (bind_data.soundness) {
+		// Filter mode: only keep sound DCs
+		for (auto &dc : all_dcs) {
+			bool sound = dcfinder::SoundnessChecker::IsSound(dc, evidence_set);
+			if (sound) {
+				result->is_sound.push_back(true);
+				result->results.push_back(std::move(dc));
+			}
+		}
+	} else {
+		// Report mode: keep all DCs, tag each with is_sound
+		for (auto &dc : all_dcs) {
+			bool sound = dcfinder::SoundnessChecker::IsSound(dc, evidence_set);
+			result->is_sound.push_back(sound);
+			result->results.push_back(std::move(dc));
+		}
+	}
 
 	return std::move(result);
 }
@@ -142,12 +172,13 @@ static void DCFinderFunction(ClientContext &context, TableFunctionInput &data, D
 	while (state.current_idx < state.results.size() && count < max_count) {
 		auto &dc = state.results[state.current_idx];
 
-		output.SetValue(0, count, Value::INTEGER((int32_t)(state.current_idx + 1)));
+		output.SetValue(0, count, Value::INTEGER(static_cast<int32_t>(state.current_idx + 1)));
 		output.SetValue(1, count, Value(dc.ToString(state.pred_space)));
-		output.SetValue(2, count, Value::INTEGER((int32_t)dc.predicate_indices.size()));
-		output.SetValue(3, count, Value::BIGINT((int64_t)dc.violation_count));
+		output.SetValue(2, count, Value::INTEGER(static_cast<int32_t>(dc.predicate_indices.size())));
+		output.SetValue(3, count, Value::BIGINT(static_cast<int64_t>(dc.violation_count)));
 		output.SetValue(4, count, Value::DOUBLE(dc.approximation));
 		output.SetValue(5, count, Value::DOUBLE(dc.succinctness));
+		output.SetValue(6, count, Value::BOOLEAN(state.is_sound[state.current_idx]));
 
 		state.current_idx++;
 		count++;
@@ -159,6 +190,7 @@ static void DCFinderFunction(ClientContext &context, TableFunctionInput &data, D
 static void LoadInternal(ExtensionLoader &loader) {
 	TableFunction dcfinder_func("dcfinder", {LogicalType::VARCHAR}, DCFinderFunction, DCFinderBind, DCFinderInit);
 	dcfinder_func.named_parameters["threshold"] = LogicalType::DOUBLE;
+	dcfinder_func.named_parameters["soundness"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(dcfinder_func);
 }
 

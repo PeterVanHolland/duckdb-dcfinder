@@ -14,6 +14,7 @@ set(EXTENSION_SOURCES
     src/dcfinder/pli.cpp
     src/dcfinder/evidence.cpp
     src/dcfinder/cover_search.cpp
+    src/dcfinder/soundness.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
