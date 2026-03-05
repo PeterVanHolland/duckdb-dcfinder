@@ -13,7 +13,8 @@ namespace dcfinder {
 struct EvidenceBitset {
 	vector<uint64_t> words;
 
-	EvidenceBitset() {}
+	EvidenceBitset() {
+	}
 	explicit EvidenceBitset(idx_t num_predicates);
 
 	void SetBit(idx_t pos);
@@ -35,8 +36,8 @@ struct EvidenceSet {
 	idx_t total_pairs;
 
 	//! Build evidence set from data
-	void Build(const PredicateSpace &pred_space, const PLISet &pli_set,
-	           const vector<vector<Value>> &column_data, idx_t num_tuples);
+	void Build(const PredicateSpace &pred_space, const PLISet &pli_set, const vector<vector<Value>> &column_data,
+	           idx_t num_tuples);
 };
 
 } // namespace dcfinder

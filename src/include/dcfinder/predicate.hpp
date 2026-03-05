@@ -9,12 +9,12 @@ namespace duckdb {
 namespace dcfinder {
 
 enum class PredicateOperator : uint8_t {
-	EQ = 0,   // =
-	NEQ = 1,  // !=
-	LT = 2,   // <
-	LEQ = 3,  // <=
-	GT = 4,   // >
-	GEQ = 5   // >=
+	EQ = 0,  // =
+	NEQ = 1, // !=
+	LT = 2,  // <
+	LEQ = 3, // <=
+	GT = 4,  // >
+	GEQ = 5  // >=
 };
 
 struct Predicate {

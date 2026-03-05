@@ -6,25 +6,39 @@ namespace dcfinder {
 
 PredicateOperator Predicate::Negate(PredicateOperator op) {
 	switch (op) {
-	case PredicateOperator::EQ:  return PredicateOperator::NEQ;
-	case PredicateOperator::NEQ: return PredicateOperator::EQ;
-	case PredicateOperator::LT:  return PredicateOperator::GEQ;
-	case PredicateOperator::LEQ: return PredicateOperator::GT;
-	case PredicateOperator::GT:  return PredicateOperator::LEQ;
-	case PredicateOperator::GEQ: return PredicateOperator::LT;
-	default: return PredicateOperator::EQ;
+	case PredicateOperator::EQ:
+		return PredicateOperator::NEQ;
+	case PredicateOperator::NEQ:
+		return PredicateOperator::EQ;
+	case PredicateOperator::LT:
+		return PredicateOperator::GEQ;
+	case PredicateOperator::LEQ:
+		return PredicateOperator::GT;
+	case PredicateOperator::GT:
+		return PredicateOperator::LEQ;
+	case PredicateOperator::GEQ:
+		return PredicateOperator::LT;
+	default:
+		return PredicateOperator::EQ;
 	}
 }
 
 vector<PredicateOperator> Predicate::Implications(PredicateOperator op) {
 	switch (op) {
-	case PredicateOperator::EQ:  return {PredicateOperator::EQ, PredicateOperator::LEQ, PredicateOperator::GEQ};
-	case PredicateOperator::NEQ: return {PredicateOperator::NEQ};
-	case PredicateOperator::LT:  return {PredicateOperator::LT, PredicateOperator::LEQ, PredicateOperator::NEQ};
-	case PredicateOperator::LEQ: return {PredicateOperator::LEQ};
-	case PredicateOperator::GT:  return {PredicateOperator::GT, PredicateOperator::GEQ, PredicateOperator::NEQ};
-	case PredicateOperator::GEQ: return {PredicateOperator::GEQ};
-	default: return {};
+	case PredicateOperator::EQ:
+		return {PredicateOperator::EQ, PredicateOperator::LEQ, PredicateOperator::GEQ};
+	case PredicateOperator::NEQ:
+		return {PredicateOperator::NEQ};
+	case PredicateOperator::LT:
+		return {PredicateOperator::LT, PredicateOperator::LEQ, PredicateOperator::NEQ};
+	case PredicateOperator::LEQ:
+		return {PredicateOperator::LEQ};
+	case PredicateOperator::GT:
+		return {PredicateOperator::GT, PredicateOperator::GEQ, PredicateOperator::NEQ};
+	case PredicateOperator::GEQ:
+		return {PredicateOperator::GEQ};
+	default:
+		return {};
 	}
 }
 
@@ -34,13 +48,20 @@ bool Predicate::SameAttributes(const Predicate &other) const {
 
 string Predicate::OperatorToString(PredicateOperator op) {
 	switch (op) {
-	case PredicateOperator::EQ:  return "=";
-	case PredicateOperator::NEQ: return "!=";
-	case PredicateOperator::LT:  return "<";
-	case PredicateOperator::LEQ: return "<=";
-	case PredicateOperator::GT:  return ">";
-	case PredicateOperator::GEQ: return ">=";
-	default: return "?";
+	case PredicateOperator::EQ:
+		return "=";
+	case PredicateOperator::NEQ:
+		return "!=";
+	case PredicateOperator::LT:
+		return "<";
+	case PredicateOperator::LEQ:
+		return "<=";
+	case PredicateOperator::GT:
+		return ">";
+	case PredicateOperator::GEQ:
+		return ">=";
+	default:
+		return "?";
 	}
 }
 
@@ -98,14 +119,17 @@ void PredicateSpace::Build(const vector<string> &col_names, const vector<Logical
 			// Check value overlap
 			unordered_set<string> vals_i, vals_j;
 			for (auto &v : column_data[i]) {
-				if (!v.IsNull()) vals_i.insert(v.ToString());
+				if (!v.IsNull())
+					vals_i.insert(v.ToString());
 			}
 			for (auto &v : column_data[j]) {
-				if (!v.IsNull()) vals_j.insert(v.ToString());
+				if (!v.IsNull())
+					vals_j.insert(v.ToString());
 			}
 			idx_t overlap = 0;
 			for (auto &v : vals_i) {
-				if (vals_j.count(v)) overlap++;
+				if (vals_j.count(v))
+					overlap++;
 			}
 			double ratio = 0;
 			if (!vals_i.empty() && !vals_j.empty()) {

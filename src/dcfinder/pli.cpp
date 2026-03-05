@@ -34,9 +34,8 @@ void PLI::Build(const vector<Value> &column_data, bool numeric) {
 	}
 
 	if (numeric && !clusters.empty()) {
-		std::sort(clusters.begin(), clusters.end(), [](const PLICluster &a, const PLICluster &b) {
-			return a.key > b.key;
-		});
+		std::sort(clusters.begin(), clusters.end(),
+		          [](const PLICluster &a, const PLICluster &b) { return a.key > b.key; });
 	}
 }
 

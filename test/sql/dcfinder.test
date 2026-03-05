@@ -26,9 +26,9 @@ SELECT count(*) > 0 FROM dcfinder('employees');
 ----
 true
 
-# With approximate threshold should find more DCs
+# Approximate threshold should find at least as many DCs
 query I
-SELECT count(*) FROM dcfinder('employees', threshold := 0.1) >= (SELECT count(*) FROM dcfinder('employees'));
+SELECT (SELECT count(*) FROM dcfinder('employees', threshold := 0.1)) >= (SELECT count(*) FROM dcfinder('employees'));
 ----
 true
 

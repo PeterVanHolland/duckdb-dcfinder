@@ -41,16 +41,19 @@ void EvidenceBitset::XorWith(const EvidenceBitset &other) {
 }
 
 bool EvidenceBitset::operator==(const EvidenceBitset &other) const {
-	if (words.size() != other.words.size()) return false;
+	if (words.size() != other.words.size())
+		return false;
 	for (idx_t i = 0; i < words.size(); i++) {
-		if (words[i] != other.words[i]) return false;
+		if (words[i] != other.words[i])
+			return false;
 	}
 	return true;
 }
 
 bool EvidenceBitset::Intersects(const EvidenceBitset &other) const {
 	for (idx_t i = 0; i < words.size() && i < other.words.size(); i++) {
-		if (words[i] & other.words[i]) return true;
+		if (words[i] & other.words[i])
+			return true;
 	}
 	return false;
 }
@@ -64,16 +67,24 @@ size_t EvidenceBitset::Hash::operator()(const EvidenceBitset &bs) const {
 }
 
 static bool CompareValues(const Value &left, const Value &right, PredicateOperator op) {
-	if (left.IsNull() || right.IsNull()) return false;
+	if (left.IsNull() || right.IsNull())
+		return false;
 	try {
 		switch (op) {
-		case PredicateOperator::EQ:  return Value::NotDistinctFrom(left, right);
-		case PredicateOperator::NEQ: return !Value::NotDistinctFrom(left, right);
-		case PredicateOperator::LT:  return left < right;
-		case PredicateOperator::LEQ: return left <= right;
-		case PredicateOperator::GT:  return left > right;
-		case PredicateOperator::GEQ: return left >= right;
-		default: return false;
+		case PredicateOperator::EQ:
+			return Value::NotDistinctFrom(left, right);
+		case PredicateOperator::NEQ:
+			return !Value::NotDistinctFrom(left, right);
+		case PredicateOperator::LT:
+			return left < right;
+		case PredicateOperator::LEQ:
+			return left <= right;
+		case PredicateOperator::GT:
+			return left > right;
+		case PredicateOperator::GEQ:
+			return left >= right;
+		default:
+			return false;
 		}
 	} catch (...) {
 		return false;
@@ -85,13 +96,15 @@ void EvidenceSet::Build(const PredicateSpace &pred_space, const PLISet &pli_set,
 	evidences.clear();
 	total_pairs = num_tuples * (num_tuples - 1);
 
-	if (num_tuples <= 1) return;
+	if (num_tuples <= 1)
+		return;
 
 	idx_t num_preds = pred_space.predicates.size();
 
 	for (idx_t x = 0; x < num_tuples; x++) {
 		for (idx_t y = 0; y < num_tuples; y++) {
-			if (x == y) continue;
+			if (x == y)
+				continue;
 
 			EvidenceBitset evidence(num_preds);
 

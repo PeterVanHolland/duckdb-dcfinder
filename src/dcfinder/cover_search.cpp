@@ -8,22 +8,21 @@ namespace dcfinder {
 string DenialConstraint::ToString(const PredicateSpace &pred_space) const {
 	string result = "NOT(";
 	for (idx_t i = 0; i < predicate_indices.size(); i++) {
-		if (i > 0) result += " AND ";
+		if (i > 0)
+			result += " AND ";
 		auto &pred = pred_space.predicates[predicate_indices[i]];
 		// The cover contains predicates that must be TRUE in every evidence.
 		// The DC says: the NEGATION of these predicates cannot all be true simultaneously.
 		// So DC predicates are the COMPLEMENT of the cover predicates.
 		PredicateOperator negated_op = Predicate::Negate(pred.op);
-		result += "t1." + pred_space.column_names[pred.left_attr] + " " +
-		          Predicate::OperatorToString(negated_op) + " t2." +
-		          pred_space.column_names[pred.right_attr];
+		result += "t1." + pred_space.column_names[pred.left_attr] + " " + Predicate::OperatorToString(negated_op) +
+		          " t2." + pred_space.column_names[pred.right_attr];
 	}
 	result += ")";
 	return result;
 }
 
-static idx_t CountCoverage(idx_t pred_idx,
-                           const vector<pair<EvidenceBitset, idx_t>> &uncovered) {
+static idx_t CountCoverage(idx_t pred_idx, const vector<pair<EvidenceBitset, idx_t>> &uncovered) {
 	idx_t count = 0;
 	for (auto &ev : uncovered) {
 		if (ev.first.GetBit(pred_idx)) {
@@ -41,39 +40,40 @@ static idx_t TotalMultiplicity(const vector<pair<EvidenceBitset, idx_t>> &uncove
 	return total;
 }
 
-static bool IsImpliedByResults(const vector<idx_t> &path,
-                               const vector<DenialConstraint> &results) {
+static bool IsImpliedByResults(const vector<idx_t> &path, const vector<DenialConstraint> &results) {
 	for (auto &dc : results) {
 		bool is_subset = true;
 		for (auto &pi : dc.predicate_indices) {
 			bool found = false;
 			for (auto &pj : path) {
-				if (pi == pj) { found = true; break; }
+				if (pi == pj) {
+					found = true;
+					break;
+				}
 			}
-			if (!found) { is_subset = false; break; }
+			if (!found) {
+				is_subset = false;
+				break;
+			}
 		}
-		if (is_subset) return true;
+		if (is_subset)
+			return true;
 	}
 	return false;
 }
 
 static const idx_t MAX_DC_SIZE = 6;
 
-void CoverSearch::FindCover(
-    vector<idx_t> &path,
-    vector<pair<EvidenceBitset, idx_t>> &uncovered,
-    vector<idx_t> &available_preds,
-    vector<DenialConstraint> &results,
-    const PredicateSpace &pred_space,
-    const EvidenceSet &evidence_set,
-    double epsilon,
-    idx_t num_tuples,
-    idx_t total_pairs) {
+void CoverSearch::FindCover(vector<idx_t> &path, vector<pair<EvidenceBitset, idx_t>> &uncovered,
+                            vector<idx_t> &available_preds, vector<DenialConstraint> &results,
+                            const PredicateSpace &pred_space, const EvidenceSet &evidence_set, double epsilon,
+                            idx_t num_tuples, idx_t total_pairs) {
 
 	idx_t uncovered_mult = TotalMultiplicity(uncovered);
 
 	if ((double)uncovered_mult <= epsilon * (double)total_pairs) {
-		if (path.empty()) return;
+		if (path.empty())
+			return;
 
 		bool has_smaller_cover = false;
 		if (path.size() > 1) {
@@ -82,7 +82,8 @@ void CoverSearch::FindCover(
 				for (auto &ev_pair : evidence_set.evidences) {
 					bool covered = false;
 					for (idx_t i = 0; i < path.size(); i++) {
-						if (i == skip) continue;
+						if (i == skip)
+							continue;
 						if (ev_pair.first.GetBit(path[i])) {
 							covered = true;
 							break;
@@ -116,9 +117,7 @@ void CoverSearch::FindCover(
 	}
 
 	std::sort(available_preds.begin(), available_preds.end(),
-	          [&](idx_t a, idx_t b) {
-		          return CountCoverage(a, uncovered) > CountCoverage(b, uncovered);
-	          });
+	          [&](idx_t a, idx_t b) { return CountCoverage(a, uncovered) > CountCoverage(b, uncovered); });
 
 	if (CountCoverage(available_preds[0], uncovered) == 0) {
 		return;
@@ -154,18 +153,15 @@ void CoverSearch::FindCover(
 			}
 		}
 
-		FindCover(path, new_uncovered, new_available, results,
-		          pred_space, evidence_set, epsilon, num_tuples, total_pairs);
+		FindCover(path, new_uncovered, new_available, results, pred_space, evidence_set, epsilon, num_tuples,
+		          total_pairs);
 
 		path.pop_back();
 	}
 }
 
-vector<DenialConstraint> CoverSearch::FindMinimalDCs(
-    const EvidenceSet &evidence_set,
-    const PredicateSpace &pred_space,
-    double epsilon,
-    idx_t num_tuples) {
+vector<DenialConstraint> CoverSearch::FindMinimalDCs(const EvidenceSet &evidence_set, const PredicateSpace &pred_space,
+                                                     double epsilon, idx_t num_tuples) {
 
 	vector<DenialConstraint> results;
 	idx_t total_pairs = num_tuples * (num_tuples - 1);
@@ -185,8 +181,7 @@ vector<DenialConstraint> CoverSearch::FindMinimalDCs(
 	}
 
 	vector<idx_t> path;
-	FindCover(path, uncovered, available, results,
-	          pred_space, evidence_set, epsilon, num_tuples, total_pairs);
+	FindCover(path, uncovered, available, results, pred_space, evidence_set, epsilon, num_tuples, total_pairs);
 
 	std::sort(results.begin(), results.end(), [](const DenialConstraint &a, const DenialConstraint &b) {
 		if (a.predicate_indices.size() != b.predicate_indices.size()) {

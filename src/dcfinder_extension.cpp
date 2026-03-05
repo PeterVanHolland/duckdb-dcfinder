@@ -29,11 +29,12 @@ struct DCFinderGlobalState : public GlobalTableFunctionState {
 	idx_t current_idx;
 	bool done;
 
-	DCFinderGlobalState() : current_idx(0), done(false) {}
+	DCFinderGlobalState() : current_idx(0), done(false) {
+	}
 };
 
 static unique_ptr<FunctionData> DCFinderBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                             vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<DCFinderBindData>();
 
 	result->table_name = input.inputs[0].GetValue<string>();
@@ -94,7 +95,8 @@ static unique_ptr<GlobalTableFunctionState> DCFinderInit(ClientContext &context,
 
 	while (true) {
 		auto chunk = query_result->Fetch();
-		if (!chunk || chunk->size() == 0) break;
+		if (!chunk || chunk->size() == 0)
+			break;
 		for (idx_t col = 0; col < num_columns; col++) {
 			for (idx_t row = 0; row < chunk->size(); row++) {
 				column_data[col].push_back(chunk->GetValue(col, row));
@@ -120,8 +122,8 @@ static unique_ptr<GlobalTableFunctionState> DCFinderInit(ClientContext &context,
 	evidence_set.Build(result->pred_space, pli_set, column_data, num_tuples);
 
 	// Phase 4: Find minimal DCs
-	result->results = dcfinder::CoverSearch::FindMinimalDCs(
-	    evidence_set, result->pred_space, bind_data.threshold, num_tuples);
+	result->results =
+	    dcfinder::CoverSearch::FindMinimalDCs(evidence_set, result->pred_space, bind_data.threshold, num_tuples);
 
 	return std::move(result);
 }
@@ -183,5 +185,4 @@ extern "C" {
 DUCKDB_CPP_EXTENSION_ENTRY(dcfinder, loader) {
 	duckdb::LoadInternal(loader);
 }
-
 }
