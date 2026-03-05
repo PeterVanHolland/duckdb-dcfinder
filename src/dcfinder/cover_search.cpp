@@ -8,8 +8,9 @@ namespace dcfinder {
 string DenialConstraint::ToString(const PredicateSpace &pred_space) const {
 	string result = "NOT(";
 	for (idx_t i = 0; i < predicate_indices.size(); i++) {
-		if (i > 0)
+		if (i > 0) {
 			result += " AND ";
+		}
 		auto &pred = pred_space.predicates[predicate_indices[i]];
 		// The cover contains predicates that must be TRUE in every evidence.
 		// The DC says: the NEGATION of these predicates cannot all be true simultaneously.
@@ -56,8 +57,9 @@ static bool IsImpliedByResults(const vector<idx_t> &path, const vector<DenialCon
 				break;
 			}
 		}
-		if (is_subset)
+		if (is_subset) {
 			return true;
+		}
 	}
 	return false;
 }
@@ -72,8 +74,9 @@ void CoverSearch::FindCover(vector<idx_t> &path, vector<pair<EvidenceBitset, idx
 	idx_t uncovered_mult = TotalMultiplicity(uncovered);
 
 	if ((double)uncovered_mult <= epsilon * (double)total_pairs) {
-		if (path.empty())
+		if (path.empty()) {
 			return;
+		}
 
 		bool has_smaller_cover = false;
 		if (path.size() > 1) {
@@ -82,8 +85,9 @@ void CoverSearch::FindCover(vector<idx_t> &path, vector<pair<EvidenceBitset, idx
 				for (auto &ev_pair : evidence_set.evidences) {
 					bool covered = false;
 					for (idx_t i = 0; i < path.size(); i++) {
-						if (i == skip)
+						if (i == skip) {
 							continue;
+						}
 						if (ev_pair.first.GetBit(path[i])) {
 							covered = true;
 							break;

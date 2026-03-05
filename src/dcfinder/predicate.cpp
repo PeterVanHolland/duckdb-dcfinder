@@ -119,17 +119,20 @@ void PredicateSpace::Build(const vector<string> &col_names, const vector<Logical
 			// Check value overlap
 			unordered_set<string> vals_i, vals_j;
 			for (auto &v : column_data[i]) {
-				if (!v.IsNull())
+				if (!v.IsNull()) {
 					vals_i.insert(v.ToString());
+				}
 			}
 			for (auto &v : column_data[j]) {
-				if (!v.IsNull())
+				if (!v.IsNull()) {
 					vals_j.insert(v.ToString());
+				}
 			}
 			idx_t overlap = 0;
 			for (auto &v : vals_i) {
-				if (vals_j.count(v))
+				if (vals_j.count(v)) {
 					overlap++;
+				}
 			}
 			double ratio = 0;
 			if (!vals_i.empty() && !vals_j.empty()) {

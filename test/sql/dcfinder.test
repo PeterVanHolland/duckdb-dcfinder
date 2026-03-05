@@ -1,6 +1,6 @@
 # name: test/sql/dcfinder.test
 # description: Test DCFinder extension
-# group: [dcfinder]
+# group: [sql]
 
 require dcfinder
 
