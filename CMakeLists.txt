@@ -18,6 +18,8 @@ set(EXTENSION_SOURCES
     src/dcfinder/dc_parser.cpp
     src/dcfinder/violations.cpp
     src/dcfinder/error_cells.cpp
+    src/dcfinder/repairs.cpp
+    src/dcfinder/profiler.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
