@@ -226,3 +226,41 @@ query I
 SELECT count(*) > 0 FROM dc_profile('unique_test', soundness := true);
 ----
 true
+
+# ============================================================
+# dc_clean() — One-shot Auto-Cleaning
+# ============================================================
+
+# dc_clean should return same schema as input
+statement ok
+CREATE TABLE dirty (id INTEGER, dept VARCHAR, hired INTEGER, salary INTEGER);
+
+statement ok
+INSERT INTO dirty VALUES
+    (1, 'Engineering', 2010, 8000),
+    (2, 'Engineering', 2015, 9000),
+    (3, 'Engineering', 2020, 5000),
+    (4, 'Sales', 2012, 6000),
+    (5, 'Sales', 2018, 7000);
+
+query I
+SELECT count(*) FROM dc_clean('dirty');
+----
+5
+
+# Clean data should preserve all rows
+query I
+SELECT count(*) FROM dc_clean('unique_test');
+----
+3
+
+# Cleaned table should have same columns as original
+query I
+SELECT count(id) > 0 FROM dc_clean('dirty');
+----
+true
+
+query I
+SELECT count(dept) > 0 FROM dc_clean('dirty');
+----
+true
