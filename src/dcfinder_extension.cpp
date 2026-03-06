@@ -16,9 +16,61 @@
 #include "dcfinder/evidence.hpp"
 #include "dcfinder/cover_search.hpp"
 #include "dcfinder/soundness.hpp"
+#include "dcfinder/dc_parser.hpp"
+#include "dcfinder/violations.hpp"
+#include "dcfinder/error_cells.hpp"
 
 namespace duckdb {
 
+// ============================================================
+// Helper: materialize a table into column-major format
+// ============================================================
+struct MaterializedTable {
+	vector<string> col_names;
+	vector<LogicalType> col_types;
+	vector<vector<Value>> column_data;
+	idx_t num_tuples;
+	idx_t num_columns;
+};
+
+static MaterializedTable MaterializeTable(ClientContext &context, const string &table_name) {
+	MaterializedTable result;
+	auto &db = DatabaseInstance::GetDatabase(context);
+	Connection con(db);
+
+	auto query_result = con.Query("SELECT * FROM " + KeywordHelper::WriteOptionallyQuoted(table_name));
+	if (query_result->HasError()) {
+		throw InvalidInputException("Failed to read table '%s': %s", table_name, query_result->GetError());
+	}
+
+	for (idx_t i = 0; i < query_result->ColumnCount(); i++) {
+		result.col_names.push_back(query_result->ColumnName(i));
+		result.col_types.push_back(query_result->types[i]);
+	}
+
+	result.num_columns = result.col_names.size();
+	result.column_data.resize(result.num_columns);
+	result.num_tuples = 0;
+
+	while (true) {
+		auto chunk = query_result->Fetch();
+		if (!chunk || chunk->size() == 0) {
+			break;
+		}
+		for (idx_t col = 0; col < result.num_columns; col++) {
+			for (idx_t row = 0; row < chunk->size(); row++) {
+				result.column_data[col].push_back(chunk->GetValue(col, row));
+			}
+		}
+		result.num_tuples += chunk->size();
+	}
+
+	return result;
+}
+
+// ============================================================
+// dcfinder() — DC Discovery
+// ============================================================
 struct DCFinderBindData : public TableFunctionData {
 	string table_name;
 	double threshold;
@@ -31,7 +83,6 @@ struct DCFinderGlobalState : public GlobalTableFunctionState {
 	dcfinder::PredicateSpace pred_space;
 	idx_t current_idx;
 	bool done;
-
 	DCFinderGlobalState() : current_idx(0), done(false) {
 	}
 };
@@ -39,7 +90,6 @@ struct DCFinderGlobalState : public GlobalTableFunctionState {
 static unique_ptr<FunctionData> DCFinderBind(ClientContext &context, TableFunctionBindInput &input,
                                              vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<DCFinderBindData>();
-
 	result->table_name = input.inputs[0].GetValue<string>();
 	result->threshold = 0.0;
 	result->soundness = true;
@@ -52,25 +102,19 @@ static unique_ptr<FunctionData> DCFinderBind(ClientContext &context, TableFuncti
 		}
 	}
 
-	names.push_back("dc_id");
+	names.emplace_back("dc_id");
 	return_types.push_back(LogicalType::INTEGER);
-
-	names.push_back("dc");
+	names.emplace_back("dc");
 	return_types.push_back(LogicalType::VARCHAR);
-
-	names.push_back("num_predicates");
+	names.emplace_back("num_predicates");
 	return_types.push_back(LogicalType::INTEGER);
-
-	names.push_back("violation_count");
+	names.emplace_back("violation_count");
 	return_types.push_back(LogicalType::BIGINT);
-
-	names.push_back("approximation");
+	names.emplace_back("approximation");
 	return_types.push_back(LogicalType::DOUBLE);
-
-	names.push_back("succinctness");
+	names.emplace_back("succinctness");
 	return_types.push_back(LogicalType::DOUBLE);
-
-	names.push_back("is_sound");
+	names.emplace_back("is_sound");
 	return_types.push_back(LogicalType::BOOLEAN);
 
 	return std::move(result);
@@ -80,77 +124,34 @@ static unique_ptr<GlobalTableFunctionState> DCFinderInit(ClientContext &context,
 	auto &bind_data = input.bind_data->Cast<DCFinderBindData>();
 	auto result = make_uniq<DCFinderGlobalState>();
 
-	// Use a separate connection to read the table data
-	auto &db = DatabaseInstance::GetDatabase(context);
-	Connection con(db);
+	auto table = MaterializeTable(context, bind_data.table_name);
 
-	auto query_result = con.Query("SELECT * FROM " + KeywordHelper::WriteOptionallyQuoted(bind_data.table_name));
-	if (query_result->HasError()) {
-		throw InvalidInputException("Failed to read table '%s': %s", bind_data.table_name, query_result->GetError());
-	}
-
-	// Get column info
-	vector<string> col_names;
-	vector<LogicalType> col_types;
-	for (idx_t i = 0; i < query_result->ColumnCount(); i++) {
-		col_names.push_back(query_result->ColumnName(i));
-		col_types.push_back(query_result->types[i]);
-	}
-
-	// Materialize into column-major format
-	idx_t num_columns = col_names.size();
-	vector<vector<Value>> column_data(num_columns);
-	idx_t num_tuples = 0;
-
-	while (true) {
-		auto chunk = query_result->Fetch();
-		if (!chunk || chunk->size() == 0) {
-			break;
-		}
-		for (idx_t col = 0; col < num_columns; col++) {
-			for (idx_t row = 0; row < chunk->size(); row++) {
-				column_data[col].push_back(chunk->GetValue(col, row));
-			}
-		}
-		num_tuples += chunk->size();
-	}
-
-	if (num_tuples <= 1) {
+	if (table.num_tuples <= 1) {
 		result->done = true;
 		return std::move(result);
 	}
 
-	// Phase 1: Build predicate space
-	result->pred_space.Build(col_names, col_types, column_data);
+	result->pred_space.Build(table.col_names, table.col_types, table.column_data);
 
-	// Phase 2: Build PLIs
 	dcfinder::PLISet pli_set;
-	pli_set.Build(column_data, col_types);
+	pli_set.Build(table.column_data, table.col_types);
 
-	// Phase 3: Build evidence set
 	dcfinder::EvidenceSet evidence_set;
-	evidence_set.Build(result->pred_space, pli_set, column_data, num_tuples);
+	evidence_set.Build(result->pred_space, pli_set, table.column_data, table.num_tuples);
 
-	// Phase 4: Find minimal DCs
 	auto all_dcs =
-	    dcfinder::CoverSearch::FindMinimalDCs(evidence_set, result->pred_space, bind_data.threshold, num_tuples);
+	    dcfinder::CoverSearch::FindMinimalDCs(evidence_set, result->pred_space, bind_data.threshold, table.num_tuples);
 
-	// Phase 5: Soundness check (Martin et al., PVLDB 2025)
-	// Filters out DCs whose predicates are statistically independent
 	if (bind_data.soundness) {
-		// Filter mode: only keep sound DCs
 		for (auto &dc : all_dcs) {
-			bool sound = dcfinder::SoundnessChecker::IsSound(dc, evidence_set);
-			if (sound) {
+			if (dcfinder::SoundnessChecker::IsSound(dc, evidence_set)) {
 				result->is_sound.push_back(true);
 				result->results.push_back(std::move(dc));
 			}
 		}
 	} else {
-		// Report mode: keep all DCs, tag each with is_sound
 		for (auto &dc : all_dcs) {
-			bool sound = dcfinder::SoundnessChecker::IsSound(dc, evidence_set);
-			result->is_sound.push_back(sound);
+			result->is_sound.push_back(dcfinder::SoundnessChecker::IsSound(dc, evidence_set));
 			result->results.push_back(std::move(dc));
 		}
 	}
@@ -160,18 +161,14 @@ static unique_ptr<GlobalTableFunctionState> DCFinderInit(ClientContext &context,
 
 static void DCFinderFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &state = data.global_state->Cast<DCFinderGlobalState>();
-
 	if (state.done || state.current_idx >= state.results.size()) {
 		output.SetCardinality(0);
 		return;
 	}
 
 	idx_t count = 0;
-	idx_t max_count = STANDARD_VECTOR_SIZE;
-
-	while (state.current_idx < state.results.size() && count < max_count) {
+	while (state.current_idx < state.results.size() && count < STANDARD_VECTOR_SIZE) {
 		auto &dc = state.results[state.current_idx];
-
 		output.SetValue(0, count, Value::INTEGER(static_cast<int32_t>(state.current_idx + 1)));
 		output.SetValue(1, count, Value(dc.ToString(state.pred_space)));
 		output.SetValue(2, count, Value::INTEGER(static_cast<int32_t>(dc.predicate_indices.size())));
@@ -179,19 +176,196 @@ static void DCFinderFunction(ClientContext &context, TableFunctionInput &data, D
 		output.SetValue(4, count, Value::DOUBLE(dc.approximation));
 		output.SetValue(5, count, Value::DOUBLE(dc.succinctness));
 		output.SetValue(6, count, Value::BOOLEAN(state.is_sound[state.current_idx]));
-
 		state.current_idx++;
 		count++;
 	}
-
 	output.SetCardinality(count);
 }
 
+// ============================================================
+// dc_violations() — Violation Detection (FACET-inspired)
+// ============================================================
+struct DCViolationsBindData : public TableFunctionData {
+	string table_name;
+	string dc_text;
+};
+
+struct DCViolationsGlobalState : public GlobalTableFunctionState {
+	vector<dcfinder::Violation> violations;
+	dcfinder::ParsedDC parsed_dc;
+	vector<string> col_names;
+	vector<vector<Value>> column_data;
+	idx_t current_idx;
+	bool done;
+	DCViolationsGlobalState() : current_idx(0), done(false) {
+	}
+};
+
+static unique_ptr<FunctionData> DCViolationsBind(ClientContext &context, TableFunctionBindInput &input,
+                                                 vector<LogicalType> &return_types, vector<string> &names) {
+	auto result = make_uniq<DCViolationsBindData>();
+	result->table_name = input.inputs[0].GetValue<string>();
+	result->dc_text = input.inputs[1].GetValue<string>();
+
+	names.emplace_back("violation_id");
+	return_types.push_back(LogicalType::INTEGER);
+	names.emplace_back("rowid_1");
+	return_types.push_back(LogicalType::BIGINT);
+	names.emplace_back("rowid_2");
+	return_types.push_back(LogicalType::BIGINT);
+	names.emplace_back("dc");
+	return_types.push_back(LogicalType::VARCHAR);
+
+	return std::move(result);
+}
+
+static unique_ptr<GlobalTableFunctionState> DCViolationsInit(ClientContext &context, TableFunctionInitInput &input) {
+	auto &bind_data = input.bind_data->Cast<DCViolationsBindData>();
+	auto result = make_uniq<DCViolationsGlobalState>();
+
+	result->parsed_dc = dcfinder::DCParser::Parse(bind_data.dc_text);
+	auto table = MaterializeTable(context, bind_data.table_name);
+
+	if (table.num_tuples <= 1) {
+		result->done = true;
+		return std::move(result);
+	}
+
+	result->col_names = table.col_names;
+	result->column_data = std::move(table.column_data);
+	result->violations = dcfinder::ViolationDetector::FindViolations(
+	    result->parsed_dc, result->col_names, table.col_types, result->column_data, table.num_tuples);
+
+	return std::move(result);
+}
+
+static void DCViolationsFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	auto &state = data.global_state->Cast<DCViolationsGlobalState>();
+	if (state.done || state.current_idx >= state.violations.size()) {
+		output.SetCardinality(0);
+		return;
+	}
+
+	idx_t count = 0;
+	while (state.current_idx < state.violations.size() && count < STANDARD_VECTOR_SIZE) {
+		auto &v = state.violations[state.current_idx];
+		output.SetValue(0, count, Value::INTEGER(static_cast<int32_t>(state.current_idx + 1)));
+		output.SetValue(1, count, Value::BIGINT(static_cast<int64_t>(v.tuple1_rowid)));
+		output.SetValue(2, count, Value::BIGINT(static_cast<int64_t>(v.tuple2_rowid)));
+		output.SetValue(3, count, Value(state.parsed_dc.ToString()));
+		state.current_idx++;
+		count++;
+	}
+	output.SetCardinality(count);
+}
+
+// ============================================================
+// dc_error_cells() — Error Cell Detection (Holistic-inspired)
+// ============================================================
+struct DCErrorCellsBindData : public TableFunctionData {
+	string table_name;
+	string dc_text;
+};
+
+struct DCErrorCellsGlobalState : public GlobalTableFunctionState {
+	vector<dcfinder::ErrorCell> error_cells;
+	vector<string> col_names;
+	vector<vector<Value>> column_data;
+	idx_t current_idx;
+	bool done;
+	DCErrorCellsGlobalState() : current_idx(0), done(false) {
+	}
+};
+
+static unique_ptr<FunctionData> DCErrorCellsBind(ClientContext &context, TableFunctionBindInput &input,
+                                                 vector<LogicalType> &return_types, vector<string> &names) {
+	auto result = make_uniq<DCErrorCellsBindData>();
+	result->table_name = input.inputs[0].GetValue<string>();
+	result->dc_text = input.inputs[1].GetValue<string>();
+
+	names.emplace_back("row_id");
+	return_types.push_back(LogicalType::BIGINT);
+	names.emplace_back("column_name");
+	return_types.push_back(LogicalType::VARCHAR);
+	names.emplace_back("current_value");
+	return_types.push_back(LogicalType::VARCHAR);
+	names.emplace_back("violation_count");
+	return_types.push_back(LogicalType::BIGINT);
+	names.emplace_back("error_likelihood");
+	return_types.push_back(LogicalType::DOUBLE);
+
+	return std::move(result);
+}
+
+static unique_ptr<GlobalTableFunctionState> DCErrorCellsInit(ClientContext &context, TableFunctionInitInput &input) {
+	auto &bind_data = input.bind_data->Cast<DCErrorCellsBindData>();
+	auto result = make_uniq<DCErrorCellsGlobalState>();
+
+	auto parsed_dc = dcfinder::DCParser::Parse(bind_data.dc_text);
+	auto table = MaterializeTable(context, bind_data.table_name);
+
+	if (table.num_tuples <= 1) {
+		result->done = true;
+		return std::move(result);
+	}
+
+	result->col_names = table.col_names;
+	result->column_data = std::move(table.column_data);
+
+	auto violations = dcfinder::ViolationDetector::FindViolations(parsed_dc, result->col_names, table.col_types,
+	                                                              result->column_data, table.num_tuples);
+
+	result->error_cells = dcfinder::ErrorCellDetector::FindErrorCells(violations, parsed_dc, result->col_names,
+	                                                                  result->column_data, table.num_tuples);
+
+	return std::move(result);
+}
+
+static void DCErrorCellsFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	auto &state = data.global_state->Cast<DCErrorCellsGlobalState>();
+	if (state.done || state.current_idx >= state.error_cells.size()) {
+		output.SetCardinality(0);
+		return;
+	}
+
+	idx_t count = 0;
+	while (state.current_idx < state.error_cells.size() && count < STANDARD_VECTOR_SIZE) {
+		auto &ec = state.error_cells[state.current_idx];
+		output.SetValue(0, count, Value::BIGINT(static_cast<int64_t>(ec.row_id)));
+		output.SetValue(1, count, Value(state.col_names[ec.col_id]));
+		// Get the current cell value as string
+		string cell_val;
+		if (ec.row_id < state.column_data[ec.col_id].size()) {
+			cell_val = state.column_data[ec.col_id][ec.row_id].ToString();
+		}
+		output.SetValue(2, count, Value(cell_val));
+		output.SetValue(3, count, Value::BIGINT(static_cast<int64_t>(ec.violation_count)));
+		output.SetValue(4, count, Value::DOUBLE(ec.error_likelihood));
+		state.current_idx++;
+		count++;
+	}
+	output.SetCardinality(count);
+}
+
+// ============================================================
+// Registration
+// ============================================================
 static void LoadInternal(ExtensionLoader &loader) {
+	// dcfinder: DC Discovery
 	TableFunction dcfinder_func("dcfinder", {LogicalType::VARCHAR}, DCFinderFunction, DCFinderBind, DCFinderInit);
 	dcfinder_func.named_parameters["threshold"] = LogicalType::DOUBLE;
 	dcfinder_func.named_parameters["soundness"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(dcfinder_func);
+
+	// dc_violations: Violation Detection
+	TableFunction violations_func("dc_violations", {LogicalType::VARCHAR, LogicalType::VARCHAR}, DCViolationsFunction,
+	                              DCViolationsBind, DCViolationsInit);
+	loader.RegisterFunction(violations_func);
+
+	// dc_error_cells: Error Cell Detection
+	TableFunction error_cells_func("dc_error_cells", {LogicalType::VARCHAR, LogicalType::VARCHAR}, DCErrorCellsFunction,
+	                               DCErrorCellsBind, DCErrorCellsInit);
+	loader.RegisterFunction(error_cells_func);
 }
 
 void DcfinderExtension::Load(ExtensionLoader &loader) {

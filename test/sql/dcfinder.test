@@ -1,10 +1,13 @@
 # name: test/sql/dcfinder.test
-# description: Test DCFinder extension
+# description: Test DCFinder extension - DC discovery, violation detection, error cell detection
 # group: [sql]
 
 require dcfinder
 
-# Basic test with the employees table from the paper
+# ============================================================
+# Basic DC Discovery
+# ============================================================
+
 statement ok
 CREATE TABLE employees (
     name VARCHAR, phone VARCHAR, position VARCHAR,
@@ -20,44 +23,42 @@ INSERT INTO employees VALUES
     ('W. Jones', '202-555', 'DBA', 7000, 2010),
     ('W. Jones', '202-222', 'Developer', 1000, 2012);
 
-# Should discover exact DCs
 query I
 SELECT count(*) > 0 FROM dcfinder('employees');
 ----
 true
 
-# Approximate threshold should find at least as many DCs
 query I
 SELECT (SELECT count(*) FROM dcfinder('employees', threshold := 0.1)) >= (SELECT count(*) FROM dcfinder('employees'));
 ----
 true
 
-# Simple two-column table for UCC discovery
+# Simple UCC table
 statement ok
 CREATE TABLE unique_test (a INTEGER, b INTEGER);
 
 statement ok
 INSERT INTO unique_test VALUES (1, 10), (2, 20), (3, 30);
 
-# Should find NOT(t1.a = t2.a) as a UCC
 query I
 SELECT count(*) > 0 FROM dcfinder('unique_test') WHERE dc LIKE '%t1.a = t2.a%';
 ----
 true
 
-# Should find NOT(t1.b = t2.b) as a UCC
 query I
 SELECT count(*) > 0 FROM dcfinder('unique_test') WHERE dc LIKE '%t1.b = t2.b%';
 ----
 true
 
-# Test soundness column exists
+# ============================================================
+# Soundness Filter (Martin et al. PVLDB 2025)
+# ============================================================
+
 query I
 SELECT count(*) > 0 FROM dcfinder('employees') WHERE is_sound IS NOT NULL;
 ----
 true
 
-# Test soundness=false returns all DCs (including unsound)
 query I
 SELECT (SELECT count(*) FROM dcfinder('employees', soundness := false)) >= (SELECT count(*) FROM dcfinder('employees'));
 ----
@@ -69,8 +70,7 @@ SELECT bool_and(is_sound) FROM dcfinder('unique_test') WHERE num_predicates = 1;
 ----
 true
 
-# Test with data that has genuinely dependent columns (FD: state -> tax_rate)
-# Need enough rows for statistical soundness test to have power
+# Genuine FD with enough data for statistical power
 statement ok
 CREATE TABLE tax_rules AS
 SELECT * FROM (VALUES
@@ -84,8 +84,89 @@ SELECT * FROM (VALUES
     ('FL', 6.00), ('FL', 6.00), ('FL', 6.00), ('FL', 6.00), ('FL', 6.00)
 ) t(state, tax_rate);
 
-# Should discover the FD state -> tax_rate as a sound DC
 query I
 SELECT count(*) > 0 FROM dcfinder('tax_rules') WHERE is_sound AND dc LIKE '%state%' AND dc LIKE '%tax_rate%';
+----
+true
+
+# ============================================================
+# Violation Detection (FACET-inspired, Pena et al. PVLDB 2022)
+# ============================================================
+
+# Table with known violations of a seniority DC:
+# NOT(t1.dept = t2.dept AND t1.hired < t2.hired AND t1.salary < t2.salary)
+# "In the same department, a more senior employee should not earn less"
+statement ok
+CREATE TABLE dept_salaries (id INTEGER, dept VARCHAR, hired INTEGER, salary INTEGER);
+
+statement ok
+INSERT INTO dept_salaries VALUES
+    (1, 'Engineering', 2010, 8000),
+    (2, 'Engineering', 2015, 9000),
+    (3, 'Engineering', 2020, 5000),
+    (4, 'Sales', 2012, 6000),
+    (5, 'Sales', 2018, 7000);
+
+# Employee 1 (hired 2010, salary 8000) vs Employee 2 (hired 2015, salary 9000):
+# dept=dept, hired<hired, salary<salary => VIOLATION
+query I
+SELECT count(*) > 0 FROM dc_violations('dept_salaries', 'NOT(t1.dept = t2.dept AND t1.hired < t2.hired AND t1.salary < t2.salary)');
+----
+true
+
+# Check that violations have the right structure
+query I
+SELECT count(*) FROM dc_violations('dept_salaries', 'NOT(t1.dept = t2.dept AND t1.hired < t2.hired AND t1.salary < t2.salary)');
+----
+2
+
+# Clean table should have no violations for UCC
+query I
+SELECT count(*) FROM dc_violations('unique_test', 'NOT(t1.a = t2.a)');
+----
+0
+
+# Table with duplicate IDs should have violations
+statement ok
+CREATE TABLE dup_ids (id INTEGER, name VARCHAR);
+
+statement ok
+INSERT INTO dup_ids VALUES (1, 'Alice'), (2, 'Bob'), (1, 'Charlie');
+
+query I
+SELECT count(*) FROM dc_violations('dup_ids', 'NOT(t1.id = t2.id)');
+----
+1
+
+# ============================================================
+# Error Cell Detection (Holistic-inspired, Chu et al. ICDE 2013)
+# ============================================================
+
+# Find which cells are likely erroneous based on seniority violations
+query I
+SELECT count(*) > 0 FROM dc_error_cells('dept_salaries', 'NOT(t1.dept = t2.dept AND t1.hired < t2.hired AND t1.salary < t2.salary)');
+----
+true
+
+# Error cells should identify specific (row, column) pairs
+query I
+SELECT count(DISTINCT column_name) > 0 FROM dc_error_cells('dept_salaries', 'NOT(t1.dept = t2.dept AND t1.hired < t2.hired AND t1.salary < t2.salary)');
+----
+true
+
+# Clean data should have no error cells
+query I
+SELECT count(*) FROM dc_error_cells('unique_test', 'NOT(t1.a = t2.a)');
+----
+0
+
+# Full pipeline: discover DCs, then find violations and errors
+query I
+SELECT count(*) > 0 FROM dc_violations('dup_ids', 'NOT(t1.id = t2.id)');
+----
+true
+
+query I
+SELECT count(*) > 0 FROM dc_error_cells('dup_ids', 'NOT(t1.id = t2.id)');
 ----
 true
