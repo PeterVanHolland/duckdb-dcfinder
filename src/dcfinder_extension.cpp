@@ -549,6 +549,186 @@ static void DCProfileFunction(ClientContext &context, TableFunctionInput &data, 
 	output.SetCardinality(count);
 }
 // ============================================================
+
+// ============================================================
+// dc_clean() — One-shot auto-cleaning (discover + detect + repair)
+// ============================================================
+struct DCCleanBindData : public TableFunctionData {
+	string table_name;
+	double threshold;
+};
+
+struct DCCleanGlobalState : public GlobalTableFunctionState {
+	// The cleaned table data as rows
+	vector<vector<Value>> rows; // row-major: rows[row_idx][col_idx]
+	vector<string> col_names;
+	vector<LogicalType> col_types;
+	idx_t current_idx;
+	bool done;
+	DCCleanGlobalState() : current_idx(0), done(false) {
+	}
+};
+
+static unique_ptr<FunctionData> DCCleanBind(ClientContext &context, TableFunctionBindInput &input,
+                                            vector<LogicalType> &return_types, vector<string> &names) {
+	auto result = make_uniq<DCCleanBindData>();
+	result->table_name = input.inputs[0].GetValue<string>();
+	result->threshold = 0.0;
+
+	for (auto &kv : input.named_parameters) {
+		if (kv.first == "threshold") {
+			result->threshold = kv.second.GetValue<double>();
+		}
+	}
+
+	// We need to get the column info from the table
+	auto &db = DatabaseInstance::GetDatabase(context);
+	Connection con(db);
+	auto query_result =
+	    con.Query("SELECT * FROM " + KeywordHelper::WriteOptionallyQuoted(result->table_name) + " LIMIT 0");
+	if (query_result->HasError()) {
+		throw InvalidInputException("Failed to read table '%s': %s", result->table_name, query_result->GetError());
+	}
+	for (idx_t i = 0; i < query_result->ColumnCount(); i++) {
+		names.push_back(query_result->ColumnName(i));
+		return_types.push_back(query_result->types[i]);
+	}
+
+	return std::move(result);
+}
+
+static unique_ptr<GlobalTableFunctionState> DCCleanInit(ClientContext &context, TableFunctionInitInput &input) {
+	auto &bind_data = input.bind_data->Cast<DCCleanBindData>();
+	auto result = make_uniq<DCCleanGlobalState>();
+
+	auto table = MaterializeTable(context, bind_data.table_name);
+
+	if (table.num_tuples <= 1) {
+		// Return original data as-is
+		for (idx_t r = 0; r < table.num_tuples; r++) {
+			vector<Value> row;
+			for (idx_t c = 0; c < table.num_columns; c++) {
+				row.push_back(table.column_data[c][r]);
+			}
+			result->rows.push_back(std::move(row));
+		}
+		result->col_names = table.col_names;
+		result->col_types = table.col_types;
+		return std::move(result);
+	}
+
+	result->col_names = table.col_names;
+	result->col_types = table.col_types;
+
+	// Phase 1: Discover DCs
+	dcfinder::PredicateSpace pred_space;
+	pred_space.Build(table.col_names, table.col_types, table.column_data);
+
+	dcfinder::PLISet pli_set;
+	pli_set.Build(table.column_data, table.col_types);
+
+	dcfinder::EvidenceSet evidence_set;
+	evidence_set.Build(pred_space, pli_set, table.column_data, table.num_tuples);
+
+	auto all_dcs =
+	    dcfinder::CoverSearch::FindMinimalDCs(evidence_set, pred_space, bind_data.threshold, table.num_tuples);
+
+	// Filter DCs: use soundness for exact mode, skip for approximate
+	vector<dcfinder::DenialConstraint> sound_dcs;
+	if (bind_data.threshold > 0.0) {
+		// Approximate mode: skip soundness (user accepts approximate constraints)
+		sound_dcs = std::move(all_dcs);
+	} else {
+		// Exact mode: filter to sound DCs only
+		for (auto &dc : all_dcs) {
+			if (dcfinder::SoundnessChecker::IsSound(dc, evidence_set)) {
+				sound_dcs.push_back(std::move(dc));
+			}
+		}
+	}
+
+	// Phase 2: Classify DCs and only use FD/UCC types for repairs
+	// Ordering constraints (ODs) can produce misleading repairs
+	vector<bool> dummy_soundness(sound_dcs.size(), true);
+	auto classified = dcfinder::DCProfiler::Classify(sound_dcs, pred_space, dummy_soundness);
+
+	// Collect all repairs: map from (row, col) -> suggested value
+	unordered_map<uint64_t, Value> repair_map; // key = (row << 32) | col
+
+	for (idx_t dc_idx = 0; dc_idx < sound_dcs.size(); dc_idx++) {
+		// Only apply repairs from FDs and UCCs — skip ODs and general DCs
+		if (classified[dc_idx].constraint_type != "FD" && classified[dc_idx].constraint_type != "UCC") {
+			continue;
+		}
+		auto &dc = sound_dcs[dc_idx];
+		string dc_text = dc.ToString(pred_space);
+		auto parsed_dc = dcfinder::DCParser::Parse(dc_text);
+
+		auto violations = dcfinder::ViolationDetector::FindViolations(parsed_dc, table.col_names, table.col_types,
+		                                                              table.column_data, table.num_tuples);
+
+		if (violations.empty()) {
+			continue;
+		}
+
+		auto error_cells = dcfinder::ErrorCellDetector::FindErrorCells(violations, parsed_dc, table.col_names,
+		                                                               table.column_data, table.num_tuples);
+
+		auto repairs = dcfinder::RepairGenerator::SuggestRepairs(violations, error_cells, parsed_dc, table.col_names,
+		                                                         table.col_types, table.column_data, table.num_tuples);
+
+		for (auto &repair : repairs) {
+			if (!repair.suggested_value.IsNull()) {
+				uint64_t key = (static_cast<uint64_t>(repair.row_id) << 32) | static_cast<uint64_t>(repair.col_id);
+				// Only apply if we don't already have a repair for this cell
+				if (repair_map.find(key) == repair_map.end()) {
+					repair_map[key] = repair.suggested_value;
+				}
+			}
+		}
+	}
+
+	// Phase 3: Build cleaned rows
+	for (idx_t r = 0; r < table.num_tuples; r++) {
+		vector<Value> row;
+		for (idx_t c = 0; c < table.num_columns; c++) {
+			uint64_t key = (static_cast<uint64_t>(r) << 32) | static_cast<uint64_t>(c);
+			auto it = repair_map.find(key);
+			if (it != repair_map.end()) {
+				// Apply repair — cast to the correct type
+				try {
+					row.push_back(it->second.DefaultCastAs(table.col_types[c]));
+				} catch (...) {
+					row.push_back(table.column_data[c][r]); // fallback to original
+				}
+			} else {
+				row.push_back(table.column_data[c][r]);
+			}
+		}
+		result->rows.push_back(std::move(row));
+	}
+
+	return std::move(result);
+}
+
+static void DCCleanFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	auto &state = data.global_state->Cast<DCCleanGlobalState>();
+	if (state.done || state.current_idx >= state.rows.size()) {
+		output.SetCardinality(0);
+		return;
+	}
+
+	idx_t count = 0;
+	while (state.current_idx < state.rows.size() && count < STANDARD_VECTOR_SIZE) {
+		auto &row = state.rows[state.current_idx];
+		for (idx_t c = 0; c < row.size(); c++) {
+			output.SetValue(c, count, row[c]);
+		}
+		state.current_idx++;
+		count++;
+	}
+	output.SetCardinality(count);
+}
 // Registration
 // ============================================================
 static void LoadInternal(ExtensionLoader &loader) {
@@ -579,6 +759,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	profile_func.named_parameters["threshold"] = LogicalType::DOUBLE;
 	profile_func.named_parameters["soundness"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(profile_func);
+
+	// dc_clean: One-shot auto-cleaning
+	TableFunction clean_func("dc_clean", {LogicalType::VARCHAR}, DCCleanFunction, DCCleanBind, DCCleanInit);
+	clean_func.named_parameters["threshold"] = LogicalType::DOUBLE;
+	loader.RegisterFunction(clean_func);
 }
 
 void DcfinderExtension::Load(ExtensionLoader &loader) {
